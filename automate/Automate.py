@@ -1,10 +1,10 @@
-import tkinter as tk
-from tkinter import simpledialog, messagebox
-from graphviz import Digraph
-from PIL import Image, ImageTk  # Pour afficher les images dans Tkinter
-from automate.Alphabet import Alphabet
+
+from collections import defaultdict
+
 from automate.Etat import Etat
 from automate.Transition import Transition
+
+
 
 class Automate:
     def __init__(self, listAlphabets=None, listEtats=None, listInitiaux=None, listFinaux=None, listTransition=None):
@@ -13,6 +13,7 @@ class Automate:
         self.listInitiaux = listInitiaux or []
         self.listFinaux = listFinaux or []
         self.listTransition = listTransition or []
+        self.handlers = defaultdict(list)
 
     def ajouter_etat(self, etat):
         self.listEtats.append(etat)
@@ -27,6 +28,10 @@ class Automate:
         self.listTransition = [t for t in self.listTransition if t.idtransition != idTransition]
 
     def afficher_graphe(self, master):
+        from graphviz import Digraph
+        from PIL import Image, ImageTk
+        import tkinter as tk
+
         # Créer un objet Graphviz
         automate = Digraph(format='png')
         automate.attr(rankdir='LR')  # Orientation gauche-droite
@@ -36,10 +41,12 @@ class Automate:
             automate.node(f"start_{init}", label="", shape="point", color="red")
             automate.edge(f"start_{init}", str(init))
 
-        # Ajouter les états
+        # Ajouter uniquement les états utilisés dans des transitions ou comme initiaux/finals
         for etat in self.listEtats:
-            shape = "doublecircle" if etat.idEtat in self.listFinaux else "circle"
-            automate.node(str(etat.idEtat), label=f"État {etat.idEtat}", shape=shape)
+            if any(t.etatSource == etat.idEtat or t.etatDestination == etat.idEtat for t in self.listTransition) \
+                    or etat.idEtat in self.listInitiaux or etat.idEtat in self.listFinaux:
+                shape = "doublecircle" if etat.idEtat in self.listFinaux else "circle"
+                automate.node(str(etat.idEtat), label=f"État {etat.idEtat}", shape=shape)
 
         # Ajouter les transitions
         for t in self.listTransition:
@@ -52,160 +59,188 @@ class Automate:
         image = Image.open("automate.png")
         photo = ImageTk.PhotoImage(image)
 
-        # Créer un widget Label pour afficher l'image dans Tkinter
-        label = tk.Label(master, image=photo)
-        label.image = photo  # Garder une référence à l'image pour éviter qu'elle ne soit collectée par le garbage collector
-        label.pack()
+        # Vérifier s'il y a un canvas existant et le supprimer s'il existe
+        for widget in master.winfo_children():
+            if isinstance(widget, tk.Canvas):
+                widget.destroy()
+
+        # Créer un nouveau canvas pour afficher l'image
+        canvas = tk.Canvas(master, bg="white")
+        canvas.pack(fill=tk.BOTH, expand=True)
+
+        # Calculer les dimensions de l'image
+        img_width, img_height = image.size
+
+        # Obtenir les dimensions de la fenêtre
+        def update_canvas():
+            canvas_width = canvas.winfo_width()
+            canvas_height = canvas.winfo_height()
+
+            # Calculer les positions pour centrer l'image
+            x_offset = max((canvas_width - img_width) // 2, 0)
+            y_offset = max((canvas_height - img_height) // 2, 0)
+
+            # Effacer le canvas et redessiner l'image au centre
+            canvas.delete("all")
+            canvas.create_image(x_offset, y_offset, anchor="nw", image=photo)
+
+        # Mettre à jour la disposition du canvas à chaque redimensionnement
+        canvas.bind("<Configure>", lambda event: update_canvas())
+
+        # Appeler une première fois pour afficher l'image
+        update_canvas()
+
+    def determiniser(self):
+        etats_deterministes = []
+        transitions_deterministes = []
+        nouveaux_etats = {}
+        compteur_transition = 0  # Pour générer des identifiants uniques pour les transitions
+
+        # Création du nouvel état initial
+        initial = frozenset(self.listInitiaux)
+        pile = [initial]
+        nouveaux_etats[initial] = f"{{{','.join(map(str, initial))}}}"
+
+        while pile:
+            etat_actuel = pile.pop()
+            etats_deterministes.append(nouveaux_etats[etat_actuel])
+
+            # Regrouper les transitions par symbole
+            transitions_par_symbole = {}
+            for transition in self.listTransition:
+                if transition.etatSource in etat_actuel:
+                    for symbole in transition.alphabet.split(','):  # Assurez-vous que `alphabet` est une chaîne
+                        if symbole not in transitions_par_symbole:
+                            transitions_par_symbole[symbole] = set()
+                        transitions_par_symbole[symbole].add(transition.etatDestination)
+
+            # Créer de nouveaux états et transitions
+            for symbole, destinations in transitions_par_symbole.items():
+                nouvel_etat = frozenset(destinations)
+                if nouvel_etat not in nouveaux_etats:
+                    nouveaux_etats[nouvel_etat] = f"{{{','.join(map(str, nouvel_etat))}}}"
+                    pile.append(nouvel_etat)
+                # Créer une nouvelle transition avec un identifiant unique
+                transitions_deterministes.append(
+                    Transition(
+                        idtransition=compteur_transition,  # Identifiant unique
+                        etatSource=nouveaux_etats[etat_actuel],
+                        etatDestination=nouveaux_etats[nouvel_etat],
+                        alphabet=symbole
+                    )
+                )
+                compteur_transition += 1  # Incrémenter le compteur pour le prochain ID
+
+        # Déterminer les états finaux
+        etats_finaux = [
+            et for et in etats_deterministes
+            if any(f in eval(et) for f in self.listFinaux)  # Vérifie si l'état contient un état final
+        ]
+
+        # Retourner l'automate déterministe
+        return Automate(
+            listAlphabets=self.listAlphabets,
+            listEtats=[Etat(i, etat) for i, etat in enumerate(etats_deterministes)],
+            listInitiaux=[nouveaux_etats[initial]],
+            listFinaux=etats_finaux,
+            listTransition=transitions_deterministes,
+        )
 
     def est_deterministe(self):
-        """
-        Vérifie si l'automate est déterministe.
-        Un automate est déterministe si, pour chaque état et chaque symbole,
-        il y a au plus une transition sortante.
-        """
-        for etat in self.listEtats:
-            if etat in self.listTransition:
-                for symbole in self.listTransition[etat]:  # Accès direct aux clés du dictionnaire
-                    # Si un état a plus d'une transition pour le même symbole, l'automate n'est pas déterministe
-                    if len(self.listTransition[etat][symbole]) > 1:
-                        return False
+        # Vérifier s'il y a un unique état initial
+        if len(self.listInitiaux) != 1:
+            return False
+
+        # Vérifier s'il n'y a pas de transitions ambiguës
+        transitions_par_etat = defaultdict(set)
+        for t in self.listTransition:
+            if (t.etatSource, t.alphabet) in transitions_par_etat:
+                return False
+            transitions_par_etat[(t.etatSource, t.alphabet)] = t.etatDestination
+
         return True
 
-    def convertir_en_deterministe(self):
-        """
-        Convertit un automate non déterministe en un automate déterministe.
-        """
-        # Création du nouvel automate déterministe
-        new_etats = []
-        new_initiaux = [tuple(self.listInitiaux)]  # L'état initial est un tuple des états initiaux
-        new_transitions = {}
-        new_finaux = []
-
-        # Pile des nouveaux sous-états à traiter
-        pile = [tuple(self.listInitiaux)]
-
-        # Créer un mapping entre les ensembles d'états et les nouveaux états
-        ensemble_to_etat = {tuple(self.listInitiaux): 0}
-        new_etats.append(tuple(self.listInitiaux))
-
-        # Algorithme de déterminisation (Powerset)
-        while pile:
-            current_ensemble = pile.pop()
-
-            # Si cet ensemble d'états contient un état final, il devient un état final dans le nouvel automate
-            if any(etat in self.listFinaux for etat in current_ensemble):
-                new_finaux.append(current_ensemble)
-
-            # Construire les transitions pour cet ensemble d'états
-            new_transitions[current_ensemble] = {}
-            for symbole in self.listAlphabets:  # Pour chaque symbole de l'alphabet
-                next_ensemble = set()
-                for etat in current_ensemble:
-                    # Recherche des transitions correspondantes dans listTransition
-                    for transition in self.listTransition:
-                        if transition.etatSource == etat and transition.alphabet == symbole:
-                            next_ensemble.add(transition.etatDestination)
-
-                next_ensemble = tuple(sorted(next_ensemble))  # Trie pour maintenir l'unicité
-
-                if next_ensemble and next_ensemble not in ensemble_to_etat:
-                    # Ajouter l'ensemble des états dans la pile et les nouveaux états
-                    ensemble_to_etat[next_ensemble] = len(new_etats)
-                    new_etats.append(next_ensemble)
-                    pile.append(next_ensemble)
-
-                # Ajouter la transition dans la table des transitions
-                new_transitions[current_ensemble][symbole] = next_ensemble
-
-        # Créer l'automate déterministe
-        return Automate(listEtats=list(range(len(new_etats))),
-                        listInitiaux=[0],
-                        listFinaux=[new_etats.index(f) for f in new_finaux],
-                        listTransition=new_transitions)
-
     def minimiser(self):
-        """
-        Minimise l'automate en utilisant l'algorithme de Moore.
-        """
-        # 1. Initialiser les partitions de l'automate
-        P = []  # P représente les partitions d'états
-        non_finaux = [etat for etat in self.listEtats if not etat.est_final()]
-        finaux = [etat for etat in self.listEtats if etat.est_final()]
+        # Étape 1 : Séparer les états en deux groupes : finaux et non-finaux
+        groupes = [set(self.listFinaux), set(e.idEtat for e in self.listEtats if e.idEtat not in self.listFinaux)]
 
-        # Partition initiale : états finaux et non-finaux
-        P.append(non_finaux)
-        P.append(finaux)
+        # Étape 2 : Raffiner les groupes
+        def trouver_groupe(etat, groupes, alphabet):
+            """
+            Retourne l'indice du groupe auquel appartient l'état après la transition.
+            """
+            for i, groupe in enumerate(groupes):
+                if etat in groupe:
+                    return i
+            return -1
 
-        # 2. Affiner les partitions jusqu'à ce que l'automate soit stable
-        stable = False
-        while not stable:
-            stable = True
-            nouvelles_partitions = []
+        def raffiner_groupes(groupes):
+            nouveaux_groupes = []
+            for groupe in groupes:
+                sous_groupes = defaultdict(set)
+                for etat in groupe:
+                    signature = tuple(
+                        (symbole, trouver_groupe(
+                            next((t.etatDestination for t in self.listTransition if
+                                  t.etatSource == etat and t.alphabet == symbole), None),
+                            groupes, symbole))
+                        for symbole in self.listAlphabets
+                    )
+                    sous_groupes[signature].add(etat)
+                nouveaux_groupes.extend(sous_groupes.values())
 
-            for partition in P:
-                # Regrouper les états ayant les mêmes transitions pour chaque symbole de l'alphabet
-                groupes = {}
-                for etat in partition:
-                    # Obtenir les transitions de l'état actuel
-                    transitions = {}
-                    for alphabet in self.listAlphabets:
-                        transition_etat = self.get_next_state(etat, alphabet)
-                        transitions[alphabet] = transition_etat
+            # Imprimer les groupes raffinés pour le débogage
+            print(f"Groupes raffinés : {nouveaux_groupes}")
 
-                    # Utiliser les transitions comme clé pour regrouper les états
-                    transitions_tuple = tuple(transitions[alphabet] for alphabet in self.listAlphabets)
-                    if transitions_tuple not in groupes:
-                        groupes[transitions_tuple] = []
-                    groupes[transitions_tuple].append(etat)
+            return nouveaux_groupes
 
-                # Créer les nouvelles partitions à partir des groupes
-                for groupe in groupes.values():
-                    nouvelles_partitions.append(groupe)
+        while True:
+            # Raffiner les groupes à chaque itération
+            nouveaux_groupes = raffiner_groupes(groupes)
 
-            # Si les nouvelles partitions sont différentes, l'automate n'est pas encore stable
-            if len(nouvelles_partitions) != len(P):
-                stable = False
-                P = nouvelles_partitions
-            else:
-                stable = True
+            # Si les groupes ne changent pas, on arrête l'itération
+            if nouveaux_groupes == groupes:
+                break
 
-        # 3. Fusionner les états dans les partitions finales
-        self.fusionner_etats(P)
+            # Mettre à jour les groupes pour la prochaine itération
+            groupes = nouveaux_groupes
 
-    def get_next_state(self, etat, alphabet):
-        """
-        Retourne l'état suivant à partir d'un état et d'un symbole de l'alphabet.
-        """
-        for transition in self.listTransition:
-            if transition.etatSource == etat.idEtat and transition.alphabet == alphabet:
-                return transition.etatDestination
-        return None
+        # Étape 3 : Construire le nouvel automate minimisé
+        mapping = {etat: i for i, groupe in enumerate(groupes) for etat in groupe}
+        nouveaux_etats = [Etat(idEtat=i, labelEtat=f"État {i}") for i in range(len(groupes))]
+        nouveaux_transitions = []
 
-    def fusionner_etats(self, partitions):
-        """
-        Fusionne les états dans les partitions données et met à jour l'automate.
-        """
-        etats_fusionnes = []
-        for partition in partitions:
-            # Prendre un état de chaque partition comme représentant
-            representant = partition[0]
-            for etat in partition[1:]:
-                # Supprimer les autres états et transitions associés
-                self.supprimer_etat(etat.idEtat)
+        for t in self.listTransition:
+            source = mapping[t.etatSource]
+            destination = mapping[t.etatDestination]
+            if not any(
+                    nt.etatSource == source and nt.etatDestination == destination and nt.alphabet == t.alphabet for nt
+                    in nouveaux_transitions):
+                nouveaux_transitions.append(
+                    Transition(idtransition=len(nouveaux_transitions), etatSource=source, etatDestination=destination,
+                               alphabet=t.alphabet)
+                )
 
-            # Mettre à jour les transitions pour pointer vers le représentant
-            for transition in self.listTransition:
-                if transition.etatSource in [etat.idEtat for etat in partition]:
-                    transition.etatSource = representant.idEtat
-                if transition.etatDestination in [etat.idEtat for etat in partition]:
-                    transition.etatDestination = representant.idEtat
+        etats_initiaux = {mapping[etat] for etat in self.listInitiaux}
+        etats_finaux = {mapping[etat] for etat in self.listFinaux}
 
-        # Réorganiser la liste des états
-        self.listEtats = [partition[0] for partition in partitions]
+        return Automate(
+            listAlphabets=self.listAlphabets,
+            listEtats=nouveaux_etats,
+            listInitiaux=list(etats_initiaux),
+            listFinaux=list(etats_finaux),
+            listTransition=nouveaux_transitions
+        )
 
-        # Mettre à jour les états finaux et initiaux après fusion
-        self.listInitiaux = [representant for representant in self.listEtats if representant.est_initial()]
-        self.listFinaux = [representant for representant in self.listEtats if representant.est_final()]
+
+
+
+
+
+
+
+
+
 
 
 

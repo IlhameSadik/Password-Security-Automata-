@@ -2,9 +2,7 @@
 from itertools import chain
 import tkinter as tk
 from tkinter import simpledialog, messagebox
-from graphviz import Digraph
-from PIL import Image, ImageTk  # Pour afficher les images dans Tkinter
-from automate.Alphabet import Alphabet
+
 from .Automate import Automate
 from automate.Etat import Etat
 from automate.Transition import Transition
@@ -14,6 +12,8 @@ class Application(tk.Tk):
         super().__init__()
         self.title("Automate Finite State Machine")
         self.geometry("800x600")
+
+
 
         # Initialisation de l'automate
         self.automate = Automate(
@@ -55,13 +55,15 @@ class Application(tk.Tk):
         transition_menu.add_command(label="Ajouter Transition", command=self.ajouter_transition)
         transition_menu.add_command(label="Supprimer Transition", command=self.supprimer_transition)
         transition_menu.add_command(label="Modifier Transition", command=self.modifier_transition)
+
         menubar.add_cascade(label="Transition", menu=transition_menu)
 
         # Menu pour les opérations sur l'automate
         operation_menu = tk.Menu(menubar, tearoff=0)
-        operation_menu.add_command(label="Déterminiser", command=self.convertir_deterministe)
+
         operation_menu.add_command(label="Compléter", command=self.completer_automate)  # Nouvelle option pour compléter
-        operation_menu.add_command(label="Minimisée", command=self.minimiser_automate)  # Nouveau menu
+        operation_menu.add_command(label="Déterminiser", command=self.transformer_en_deterministe)
+        operation_menu.add_command(label="Minimiser", command=self.minimiser_automate)
 
         operation_menu.add_command(label="Supprimer tout", command=self.supprimer_automate)  # Nouveau menu
 
@@ -338,89 +340,45 @@ class Application(tk.Tk):
         messagebox.showinfo("Succès", "L'automate a été complété avec succès.")
         self.refresh_graph()
 
-    def charger_automate(self, automate):
-        """Méthode pour charger un automate dans l'application"""
-        self.automate = automate
+    def transformer_en_deterministe(self):
+        """
+        Transforme l'automate non déterministe en un automate déterministe.
+        """
+        try:
+            # Transformer l'automate non déterministe en déterministe
+            self.automate = self.automate.determiniser()
+            messagebox.showinfo("Succès", "L'automate a été transformé en automate déterministe.")
+            self.refresh_graph()  # Rafraîchir l'affichage après la transformation
+        except Exception as e:
+            messagebox.showerror("Erreur", f"Erreur lors de la transformation : {e}")
 
-    def verifier_determinisme(self):
-        """Vérifie si l'automate est déterministe"""
-        if self.automate is None:
-            messagebox.showerror("Erreur", "Aucun automate chargé.")
-            return
-        if self.automate.est_deterministe():
-            messagebox.showinfo("Résultat", "L'automate est déterministe.")
-        else:
-            messagebox.showinfo("Résultat", "L'automate n'est pas déterministe.")
+    def refresh_graph(self):
+        # Supprimer l'ancienne image du graphe si elle existe
+        for widget in self.winfo_children():
+            if isinstance(widget, tk.Label):
+                widget.destroy()  # Suppression des anciens widgets d'image
 
-    def convertir_deterministe(self):
-        """Convertit l'automate non déterministe en déterministe et affiche le résultat"""
-        if self.automate is None:
-            messagebox.showerror("Erreur", "Aucun automate chargé.")
-            return
-        automate_d = self.automate.convertir_en_deterministe()
-        if automate_d.est_deterministe():
-            messagebox.showinfo("Conversion", "L'automate a été converti en déterministe.")
-        else:
-            messagebox.showinfo("Conversion", "La conversion a échoué.")
+        # Re-générer et afficher le graphe mis à jour
+        self.automate.afficher_graphe(self)
 
     def minimiser_automate(self):
-        """Minimise un automate déterministe en utilisant la méthode de Moore."""
-        if self.automate is None:
-            messagebox.showerror("Erreur", "Aucun automate chargé.")
-            return
-
-        if not self.automate.est_deterministe():
-            messagebox.showerror("Erreur", "L'automate n'est pas déterministe.")
-            return
-
-        # Code pour minimiser l'automate
-        self.automate.minimiser()
-        messagebox.showinfo("Succès", "L'automate a été minimisé.")
-
-
-
-
-
-    def partitionner_par_transition(self, partitions):
         """
-        Partitionne les états en fonction de leurs transitions.
+        Minimise l'automate et met à jour l'affichage.
         """
-        nouvelles_partitions = []
-        # Exemple de partitionnement par transitions (à adapter selon l'implémentation)
-        for partition in partitions:
-            # Partitionner chaque groupe en fonction des transitions
-            transitions_par_ensemble = {}
-            for etat in partition:
-                cle = tuple(sorted([transition.etatDestination for transition in self.automate.listTransition if
-                                    transition.etatSource == etat.idEtat]))
-                if cle not in transitions_par_ensemble:
-                    transitions_par_ensemble[cle] = []
-                transitions_par_ensemble[cle].append(etat)
+        try:
+            # Appliquer la méthode de minimisation sur l'automate
+            self.automate = self.automate.minimiser()
+            messagebox.showinfo("Succès", "L'automate a été minimisé avec succès.")
+            self.refresh_graph()  # Mettre à jour l'affichage
+        except Exception as e:
+            messagebox.showerror("Erreur", f"Erreur lors de la minimisation : {e}")
 
-            nouvelles_partitions.extend(transitions_par_ensemble.values())
 
-        return nouvelles_partitions
 
-    def fusionner_etats_equivalents(self, partitions):
-        """
-        Fusionne les états équivalents en un seul état pour chaque partition.
-        """
-        nouveaux_etats = []
-        for partition in partitions:
-            # Créer un nouvel état qui représente l'ensemble de la partition
-            # Par exemple, prendre le premier état de la partition pour le nom
-            nouvel_etat = Etat(max([etat.idEtat for etat in partition]), f"État Fusionné")
-            nouveaux_etats.append(nouvel_etat)
-            # Mettre à jour les transitions en conséquence
-            for etat in partition:
-                # Les transitions doivent pointer vers l'état fusionné
-                for transition in self.automate.listTransition:
-                    if transition.etatSource == etat.idEtat:
-                        transition.etatSource = nouvel_etat.idEtat
 
-        # Mettre à jour l'automate avec les nouveaux états fusionnés
-        self.automate.listEtats = nouveaux_etats
-        self.automate.listInitiaux = [etat.idEtat for etat in nouveaux_etats if
-                                      etat.idEtat in self.automate.listInitiaux]
-        self.automate.listFinaux = [etat.idEtat for etat in nouveaux_etats if etat.idEtat in self.automate.listFinaux]
+
+
+
+
+
 
